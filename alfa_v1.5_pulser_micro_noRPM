@@ -10,7 +10,7 @@ int map_val = 0;
 float  val_inj_tune = 0;
 unsigned long  lst_inj = 0;
 unsigned long  delay_inj = 0;
-unsigned long  inj_value = 0;
+int inj_value = 0;
 int inj_state = 0;
 int inj_fuel_map = 0;
 int inj_value_map = 0;
@@ -24,9 +24,7 @@ unsigned long mcs;        //time from micros()
 const int ignitionInterrupt = 0;
 const unsigned int pulsesPerRev = 1;
 unsigned long lastPulseTime = 0;
-unsigned long rpm = 0;
-int rpm_int;
-int rpm_to_disp;
+volatile int state = LOW; //*added
 
 //fuel map======================================================
 int fuel_curve [11][11] = {         //---tune later---
@@ -45,19 +43,11 @@ int fuel_curve [11][11] = {         //---tune later---
       };
 //======================================================fuel map
 
-void ignitionIsr()
-{
-	unsigned long now = millis();
-	unsigned long interval = now - lastPulseTime;
-	if (interval > 5)
-	{
-		rpm = 60000UL/(interval * pulsesPerRev);
-		lastPulseTime = now;
-		//rpm_int=int(rpm);
-	}  
-
-}
-
+void xyz ()                   //*added
+{	//*added
+	state = !state;           //*added
+	//*added
+}   
 void setup() {
 	pinMode(inj_Pin, OUTPUT);     // sets the pin as output
 	pinMode(pump_Pin, OUTPUT);    // sets the pin as output
@@ -65,7 +55,7 @@ void setup() {
 	pinMode(tps_Pin, INPUT);      // sets the pin as input
 	pinMode(cdi_pulse_Pin, INPUT);  // sets the pin as input
 	//attachInterrupt(ignitionInterrupt, ignitionIsr, RISING);
-	rpm = 550;
+	attachInterrupt(digitalPinToInterrupt(cdi_pulse_Pin), xyz, RISING); //*added
 	Serial.begin(9600);
 }
 
@@ -75,17 +65,15 @@ void loop() {
 	mcs = micros();
 	tps_val = analogRead(tps_Pin);  // read tps input pin
 	map_val = analogRead(map_Pin);  // read map input pin
-	//noInterrupts();
-	//rpm_to_disp=int(rpm);
-	//interrupts();
 
 	//tps 0% = 110
 	//tps 100% = 850
 	inj_fuel_map = ((-0.117*tps_val)+110)/10; //============= Calculation utk TPS percentage
 
-	inj_value = fuel_curve[inj_fuel_map][0];
-	if(inj_value<0){	inj_value_map=0;}
-	else if(inj_value>=0){	inj_value_map = inj_value;}
+	if(inj_fuel_map<0){	inj_value_map=0;}
+	else if(inj_fuel_map>=0){	inj_value_map = inj_value_map;}
+	inj_value = fuel_curve[inj_value_map][0];
+
 	val_inj_tune = (-0.06956*tps_val)+118;
 
 	// Fuel pump State start
@@ -112,7 +100,7 @@ void loop() {
 	}
 	// Injector State end
 
-	//Serial.print("rpm:");
+	Serial.print("rpm:");
 	//Serial.print(rpm_to_disp);
 
 	Serial.print("   tps:");
