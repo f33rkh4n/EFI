@@ -83,9 +83,9 @@ void loop() {
 	//tps 100% = 850
 	inj_fuel_map = ((-0.117*tps_val)+110)/10; //============= Calculation utk TPS percentage
 
-	if(inj_fuel_map<0){	inj_value=0;}
-	else if(inj_fuel_map>=0){	inj_value = inj_value_map;}
-	inj_value = fuel_curve[inj_value][0];
+	if(inj_fuel_map<0){	inj_value_map=0;}
+	else if(inj_fuel_map>=0){	inj_value_map = inj_value_map;}
+	inj_value = fuel_curve[inj_value_map][0];
 
 	val_inj_tune = (-0.06956*tps_val)+118;
 
