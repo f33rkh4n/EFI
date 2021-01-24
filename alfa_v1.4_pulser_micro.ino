@@ -1,8 +1,8 @@
-int inj_Pin = 3;    // Injector to digital 				pin 3 OUT
-int pump_Pin = 8;   // Pump to digital 				pin 8 OUT
-int tps_Pin = A1;   // TPS to analog 					pin 3 IN
-int map_Pin = A2;   // MAP to analog 					pin 3 IN
-const int cdi_pulse_Pin = 2;		// RPM/Pulse to digital pin 2 IN
+int inj_Pin = 3;    // Injector to digital         pin 3 OUT
+int pump_Pin = 8;   // Pump to digital        pin 8 OUT
+int tps_Pin = A1;   // TPS to analog          pin 3 IN
+int map_Pin = A2;   // MAP to analog          pin 3 IN
+const int cdi_pulse_Pin = 2;    // RPM/Pulse to digital pin 2 IN
 
 int tps_val = 0;    // variable to store the read value
 int map_val = 0;
@@ -13,6 +13,8 @@ unsigned long  delay_inj = 0;
 unsigned long  inj_value = 0;
 int inj_state = 0;
 int inj_fuel_map = 0;
+int inj_value_map = 0;
+
 unsigned long  lst_pump = 0;
 unsigned long  delay_pump = 0;
 int pump_state = 0;
@@ -57,12 +59,13 @@ void ignitionIsr()
 }
 
 void setup() {
-	pinMode(inj_Pin, OUTPUT);  		// sets the pin as output
-	pinMode(pump_Pin, OUTPUT);  	// sets the pin as output
-	pinMode(map_Pin, INPUT);  		// sets the pin as input
-	pinMode(tps_Pin, INPUT);  		// sets the pin as input
-	pinMode(cdi_pulse_Pin, INPUT); 	// sets the pin as input
+	pinMode(inj_Pin, OUTPUT);     // sets the pin as output
+	pinMode(pump_Pin, OUTPUT);    // sets the pin as output
+	pinMode(map_Pin, INPUT);      // sets the pin as input
+	pinMode(tps_Pin, INPUT);      // sets the pin as input
+	pinMode(cdi_pulse_Pin, INPUT);  // sets the pin as input
 	attachInterrupt(ignitionInterrupt, ignitionIsr, RISING);
+	rpm = 550;
 	Serial.begin(9600);
 }
 
@@ -76,20 +79,17 @@ void loop() {
 	rpm_to_disp=int(rpm);
 	interrupts();
 
-	//if(rpm_to_disp<1000){	inj_fuel_map=0;}
-	//else if(rpm_to_disp>1000){	inj_fuel_map=rpm_to_disp/1000;}
-	//else if(rpm_to_disp>10000){	inj_fuel_map=10;}
-
 	//tps 0% = 110
 	//tps 100% = 850
 	inj_fuel_map = ((-0.117*tps_val)+110)/10; //============= Calculation utk TPS percentage
 
 	inj_value = fuel_curve[inj_fuel_map][0];
-
+	if(inj_value<0){	inj_value_map=0;}
+	else if(inj_value>=0){inj_value_map = inj_value;}
 	val_inj_tune = (-0.06956*tps_val)+118;
 
 	// Fuel pump State start
-	if(pump_state==0 && (ms-delay_pump)>(val_inj_tune*2.5)){
+	if((pump_state==0 && (ms-delay_pump)>(val_inj_tune*2.5)) || ms<3000){
 		digitalWrite(pump_Pin, 1);
 		lst_pump = ms;
 		pump_state=1;
