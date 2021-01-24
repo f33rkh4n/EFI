@@ -89,7 +89,7 @@ void loop() {
 	val_inj_tune = (-0.06956*tps_val)+118;
 
 	// Fuel pump State start
-	if((pump_state==0 && (ms-delay_pump)>(val_inj_tune*2.5)) || ms<3000){
+	if(pump_state==0 && (ms-delay_pump)>(val_inj_tune*2.5)){
 		digitalWrite(pump_Pin, 1);
 		lst_pump = ms;
 		pump_state=1;
@@ -101,7 +101,7 @@ void loop() {
 	// Fuel pump  State end
 
 	// Injector State start
-	if(inj_state==0 && digitalRead(cdi_pulse_Pin)==HIGH){
+	if((inj_state==0 && digitalRead(cdi_pulse_Pin)==HIGH) || ms<3000){
 		digitalWrite(inj_Pin, 1);
 		lst_inj = mcs;
 		inj_state=1;
