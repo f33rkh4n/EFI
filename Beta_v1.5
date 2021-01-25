@@ -1,6 +1,6 @@
 
 #define injector  3
-#define FUELPUMP  4
+#define FUELPUMP  8
 #define TPS A1
 //#define EOT A2
 
@@ -23,7 +23,7 @@ void setup()
   pinMode(injector, OUTPUT);
   pinMode(FUELPUMP, OUTPUT);
  // pinMode(EOT, INPUT);
-  pinMode(3, INPUT);
+  pinMode(2, INPUT);
   pinMode(TPS, INPUT);
   attachInterrupt(0, pulseISR, FALLING);  
 
