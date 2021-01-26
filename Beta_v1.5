@@ -30,10 +30,10 @@ void setup()
   Serial.begin(115200);
 
       digitalWrite(FUELPUMP , LOW);
-      digitalWrite(13,HIGH);
+      digitalWrite(injector,HIGH);
       delay(800);
       digitalWrite(FUELPUMP , HIGH);
-      digitalWrite(13,LOW);
+      digitalWrite(injector,LOW);
 }
 
 void loop()
@@ -120,7 +120,7 @@ void sensor(){
   tps_r = map(val, 0, 1023, 0 , 255 );
 }
 
-void timing(){// adjust timing injectir pakai rpm
+void timing(){// adjust timing injector pakai rpm
 switch (lag) {
     case 0:
       if (deciSeconds <= 1){
