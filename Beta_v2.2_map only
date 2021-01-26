@@ -13,8 +13,8 @@ const int LEDPin = 13;
 // Timing constants:
 const unsigned long injectorUpdateInterval = 50000;
 const unsigned long interruptDebounce = 3000;
-const unsigned long primeTime = 500;
-const unsigned long pumpTime = 1500;
+const unsigned long primeTime = 1500;
+const unsigned long pumpTime = 500;
 const int serialReportModulo = 10;
 const int RPMrunningAverageDepth = 5;
 const unsigned long blinkTime = 250;
@@ -184,6 +184,7 @@ void setup() {
 	pinMode(injectorPin, OUTPUT);
 	pinMode(pointsPin, INPUT);
 	pinMode(LEDPin, OUTPUT);
+        PinMode(8, OUTPUT);
 
 	// Attach interrupt for detecting points pulses:
 	attachInterrupt(digitalPinToInterrupt(pointsPin), points, FALLING);
@@ -191,12 +192,12 @@ void setup() {
 	//Start Serial port:
 	Serial.begin(115200);
 	Serial.println("EFI controller based on MAP and Points ONLY");
-	Serial.println("(C) 2020 John Patterson Consulting, LLC");
 	Serial.println(" ");
 
 	//Wait for fuel pump to build pressure:
 	Serial.println("Waiting for fuel pump...");
-	delay(pumpTime);
+        digitalWrite(8, HIGH);
+        delay(pumpTime);
 	Serial.println(" ");
 
 	// Prime engine with some fuel before starting:
@@ -250,4 +251,3 @@ void loop() {
 	}
 
 }
-//© 2021 GitHub, Inc.
