@@ -1,125 +1,505 @@
-int inj_Pin = 3;    // Injector to digital 				pin 3 OUT
-int pump_Pin = 8;   // Pump to digital 				pin 8 OUT
-int tps_Pin = A1;   // TPS to analog 					pin 3 IN
-int map_Pin = A2;   // MAP to analog 					pin 3 IN
-const int ignitionPin = 2;		// RPM/Pulse to digital pin 2 IN
-int fuel_method_pin = 4;// Injection method to digital	pin 4 IN
+//@f33rkh4n 
+// EFI controller based on MAP and Points ONLY
+// You are free to modify and redistribute this code without restriction.
 
-int tps_val = 0;    // variable to store the read value
-int map_val = 0;
-//int val_pwm = 0;
-float  val_inj_tune = 0;
-unsigned long  lst_inj = 0;
-unsigned long  delay_inj = 0;
-unsigned long  inj_value = 0;
-int inj_state = 0;
-int inj_fuel_map = 0;
-unsigned long  lst_pump = 0;
-unsigned long  delay_pump = 0;
-int pump_state = 0;
-unsigned long ms;        //time from millis()
-unsigned long mcs;        //time from micros()
+// ----------------- Program constants -----------------:
 
-const int ignitionInterrupt = 0;
-const unsigned int pulsesPerRev = 1;
-unsigned long lastPulseTime = 0;
-unsigned long rpm = 0;
-int rpm_int;
-int rpm_to_disp;
+// Pin numbers:
+const int pointsPin = 2;	//RPM/CDI Pulse pin
+const int MAPPin = A2;		//MAP sensor XXXXXXXXXX Tukar ni antara A1 @ A2 (A1=>TPS / A2=>MAP sensor)
+const int injectorPin = 3; 	//injector out
+const int LEDPin = 13;
 
-//fuel map======================================================
-int fuel_curve [11][11] = {         //---tune later---
-//rpm==0.5k==1k===2k===3k===4k===5k===6k===7k===8k===9k===10k==load%
-        {1,  14,  23, 26,  30,  32,  33,  34,  35,  36,  37}, //100%
-        {2,  14,  20,  24,  28,  30,  30,  31,  33,  36,  36}, //90%
-        {3,  13,  19,  23,  26,  27,  28,  28,  31,  34,  35}, //80%
-        {4,  12,  18,  21,  24,  25,  25,  25,  28,  31,  33}, //70%
-        {5,  12,  16,  19,  21,  22,  23,  23,  25,  29,  31}, //60%
-        {6,  11,  15,  17,  19,  19,  20,  20,  22,  26,  29}, //50%
-        {7,  11,  13,  15,  17,  17,  18,  19,  20,  24,  26}, //40%
-        {8,  10,  11,  13,  15,  15,  16,  17,  18,  22,  24}, //30%
-        {9,   9,   9,  11,  12,  13,  14,  15,  16,  20,  22}, //20%
-        {10,   8,   8,   9,  10,  11,  12,  13,  15,  18,  21}, //10%
-        {11,   7,   8,   8,   9,   9,  10,  11,  13,  17,  20}, //0%
-      };
-//======================================================fuel map
+// Timing constants:
+const unsigned long injectorUpdateInterval = 50000;
+const unsigned long interruptDebounce = 3000;
+const unsigned long primeTime = 1500;
+const unsigned long pumpTime = 500;
+const int serialReportModulo = 10;
+const int RPMrunningAverageDepth = 5;
+const unsigned long blinkTime = 250;
 
-void ignitionIsr()
+// Engine-related constants:
+const int pulsesPerRevolution = 2;
+const double displacement_Liters = 1.2;
+const double AFR = 10.0;    // ~14 for gasoline, ~10 for E85
+const double injector_MaxGramsPerMinute = 195.0;  // Will depend on your injector and fuel pressure
+const double stallRPM = 300.0;
+const double Pascals_Per_ADC_Unit = 122.1;
+const int vacuum_ADC_value = 102;
+
+// Physical parameters:
+const double airTempKelvin = 273;
+const double airMolarMass = 28.9;
+const double R_Liter_Pascal_Kelvin = 8314.0;
+
+// ----------------- Global Variables -----------------:
+unsigned long updateLastMicros = 0;
+unsigned long pointsLastMicros = 0;
+unsigned long pointsDiff = 100000000;
+bool stalled = 0;
+int serialReportCount = 0;
+double RPMrunningAverage[RPMrunningAverageDepth];
+int RPMrunningAverageIndex = 0;
+unsigned long blinkLastMillis = 0;
+bool blinkState = 0;
+
+// ----------------- Functions -----------------:
+
+// ISR triggered when the points open:
+void points()
 {
-	unsigned long now = millis();
-	unsigned long interval = now - lastPulseTime;
-	if (interval > 5)
+	//Determine if interrupt is valid based on time since last interrupt:
+	if((micros() - pointsLastMicros) > interruptDebounce)
 	{
-		rpm = 60000UL/(interval * pulsesPerRev);
-		lastPulseTime = now;
-		//rpm_int=int(rpm);
-	}  
+		// Compute difference in time from last points opening:
+		pointsDiff = micros() - pointsLastMicros;
+
+		// Reset points timer:
+		pointsLastMicros = micros();
+	}
 
 }
 
+// Function to compute RPM based on time since last points opening:
+double RPM()
+{
+	// If pointsDiff is longer than the time since points() was last called,
+	// just use pointsDiff to compute the RPM:
+	if(pointsDiff > (micros() - pointsLastMicros))
+	{
+		// RPM = (Pulses/sec)/(Pulses/Revolution)*(60 sec/min)
+		RPMrunningAverage[RPMrunningAverageIndex] = (1000000.0/pointsDiff)/pulsesPerRevolution*60.0;
+	}
+	// If it has been longer than pointsDiff since points() was last called,
+	// use the elapsed time to compute the RPM:
+	else
+	{
+		// RPM = (Pulses/sec)/(Pulses/Revolution)*(60 sec/min)
+		RPMrunningAverage[RPMrunningAverageIndex] = (1000000.0/(micros() - pointsLastMicros))/pulsesPerRevolution*60.0;
+	}
+
+	//Increment running average index, reset if needed:
+	RPMrunningAverageIndex++;
+	if(RPMrunningAverageIndex >= RPMrunningAverageDepth)
+	{
+		RPMrunningAverageIndex = 0;
+	}
+
+	// Compute running average sum:
+	double sum = 0;
+	for(int i = 0; i < RPMrunningAverageDepth; i++)
+	{
+		sum = sum + RPMrunningAverage[i];
+	}
+
+	// Return running average of RPM:
+	return sum/RPMrunningAverageDepth;
+}
+
+// Function to measure the Manifold Absolute Pressure (MAP):
+double MAP()
+{
+	double estimatedMAP = (analogRead(MAPPin) - vacuum_ADC_value)*Pascals_Per_ADC_Unit;
+
+	// Ensure only positive MAP values are returned:
+	if(estimatedMAP < 0)
+	{
+		estimatedMAP = 0;
+	}
+
+	return estimatedMAP;
+}
+
+// Function to report human-readable stats to the serial port:
+void reportStats(double RPM_report, double MAP_report, double DC_report)
+{
+	// Report engine RPM:
+	Serial.print("Engine RPM: ");
+	Serial.println(RPM_report);
+	Serial.print("Manifold Absolute Pressure: ");
+	Serial.print("kPa: ");
+	Serial.print(MAP_report/1000.0);
+	Serial.print(" PSI: ");
+	Serial.println(MAP_report/6894.76);
+	Serial.print("Injector Duty Cycle: ");
+	Serial.print(DC_report*100.0);
+	Serial.println("%");
+	Serial.println(" ");
+}
+
+// Function to compute the required fuel injector duty cycle:
+double getInjectorDC()
+{
+	//Get measurements:
+	double RPM_value = RPM();
+	double MAP_value = MAP();
+
+	// Compute the volume flow rate of air (L/min) into the engine
+	// (Otto cycle with 2 revolutions per intake stroke assumed):
+	double volFlowRate = displacement_Liters*RPM_value/2.0;
+
+	// Compute the density of air (g/L) using the Ideal Gas Law (PV=nRT):
+	// Density = mass/volume = n(airMolarMass)/V = P(airMolarMass)/(RT)
+	double airDensity = MAP_value*airMolarMass/(R_Liter_Pascal_Kelvin*airTempKelvin);
+
+	// Compute the mass air flow rate into the engine:
+	double massAirFlow = volFlowRate*airDensity;
+
+	// Compute the required mass fuel flow rate into the engine:
+	double massFuelFlow = massAirFlow/AFR;
+
+	// Compute the duty cycle for the fuel injector 
+	// (based on the maximum fuel delivery rate):
+	double estimated_DC = massFuelFlow/injector_MaxGramsPerMinute;
+
+	// Ensure that the duty cycle does not exceed 1 or fall below 0:
+	if(estimated_DC > 1.0)
+	{
+		estimated_DC = 1.0;
+	}
+	if(estimated_DC < 0)
+	{
+		estimated_DC = 0;
+	}
+
+	// Report human-readable stats every serialReportModulo iterations:
+	if(serialReportCount < serialReportModulo)
+	{
+		serialReportCount++;
+	}
+	else
+	{
+		serialReportCount = 0;
+		reportStats(RPM_value, MAP_value, estimated_DC);
+	}
+
+	return estimated_DC;
+}
+
+// ----------------- Main Program -----------------:
+
 void setup() {
-	pinMode(inj_Pin, OUTPUT);  		// sets the pin as output
-	pinMode(pump_Pin, OUTPUT);  	// sets the pin as output
-	pinMode(map_Pin, INPUT);  		// sets the pin as input
-	pinMode(tps_Pin, INPUT);  		// sets the pin as input
-	pinMode(ignitionPin, INPUT); 	// sets the pin as input
-	pinMode(fuel_method_pin, INPUT);// sets the pin as input
-	attachInterrupt(ignitionInterrupt, ignitionIsr, RISING);
-	Serial.begin(9600);
+	// Set pin modes:
+	pinMode(injectorPin, OUTPUT);
+	pinMode(pointsPin, INPUT);
+	pinMode(LEDPin, OUTPUT);
+	pinMode(8, OUTPUT);
+
+	// Attach interrupt for detecting points pulses:
+	attachInterrupt(digitalPinToInterrupt(pointsPin), points, FALLING);
+
+	//Start Serial port:
+	Serial.begin(115200);
+	Serial.println("EFI controller based on MAP and Points ONLY");
+	Serial.println(" ");
+
+	//Wait for fuel pump to build pressure:
+	Serial.println("Waiting for fuel pump...");
+	digitalWrite(8, HIGH);
+	delay(pumpTime);
+	Serial.println(" ");
+
+	// Prime engine with some fuel before starting:
+	Serial.println("Priming intake...");
+	digitalWrite(injectorPin, HIGH);
+	delay(primeTime);
+	digitalWrite(injectorPin, LOW);
+	Serial.println("Priming complete. Ready to crank!");
+	Serial.println(" ");
 }
 
 void loop() {
+	//Determine if the engine is currently stalled:
+	stalled = (RPM() < stallRPM);
 
-	ms = millis();
-	tps_val = analogRead(tps_Pin);  // read tps input pin
-	map_val = analogRead(map_Pin);  // read map input pin
-	noInterrupts();
-	rpm_to_disp=int(rpm);
-	interrupts();
-
-	//if(rpm_to_disp<1000){	inj_fuel_map=0;}
-	//else if(rpm_to_disp>1000){	inj_fuel_map=rpm_to_disp/1000;}
-	//else if(rpm_to_disp>10000){	inj_fuel_map=10;}
-
-	//tps 0% = 110
-	//tps 100% = 850
-	inj_fuel_map = ((0.117*tps_val)+0.25)/10; //============= Calculation utk TPS percentage
-
-	inj_value = fuel_curve[inj_fuel_map][0];
-
-	val_inj_tune = (-0.8956*tps_val)+398;
-
-	// Fuel pump State start
-	if(pump_state==0 && (ms-delay_pump)>(val_inj_tune*2.5)){
-		digitalWrite(pump_Pin, 1);
-		lst_pump = ms;
-		pump_state=1;
-	}else if(pump_state==1 && (ms-lst_pump)>500){
-		digitalWrite(pump_Pin, 0);
-		delay_pump = ms;
-		pump_state=0;
+	// If engine is running, keep LED on and steady:
+	if(!stalled)
+	{
+		digitalWrite(LEDPin, HIGH);
 	}
-	// Fuel pump  State end
-
-	// Injector State start
-	if(inj_state==0 && digitalRead(ignitionPin)==HIGH){
-		digitalWrite(inj_Pin, 1);
-		lst_inj = ms;
-		inj_state=1;
-	}else if(inj_state==1 && (ms-lst_inj)>inj_value){
-		digitalWrite(inj_Pin, 0);
-		delay_inj = ms;
-		inj_state=0;
+	// If engine is stalled, blink LED:
+	else if(millis() - blinkLastMillis > blinkTime)
+	{
+		blinkLastMillis = millis();
+		blinkState = !blinkState;
+		digitalWrite(LEDPin, blinkState);
 	}
-	// Injector State end
 
-	Serial.print("rpm:");
-	Serial.print(rpm_to_disp);
+	// Pulse the injector if it is time to do so:
+	if((micros() - updateLastMicros) > injectorUpdateInterval)
+	{
+		// Reset injector update timer:
+		updateLastMicros = micros();
 
-	Serial.print("   tps:");
-	Serial.print(tps_val);
+		// Compute fuel injector duty cycle:
+		double computed_DC = getInjectorDC();
 
-	Serial.print("   inj val:");
-	Serial.println(inj_value);
+		// Only dispense fuel if engine is running:
+		if(!stalled)
+		{
+			// Open injector for amount of time specified by duty cycle:
+			unsigned long injectorMicros = micros();
+			while((micros() - injectorMicros) < (unsigned long)(injectorUpdateInterval*computed_DC))
+			{
+				digitalWrite(injectorPin, HIGH);
+			}
+
+			//Close injector:
+			digitalWrite(injectorPin, LOW);
+		}
+	}
+
+}//@f33rkh4n 
+// EFI controller based on MAP and Points ONLY
+// You are free to modify and redistribute this code without restriction.
+
+// ----------------- Program constants -----------------:
+
+// Pin numbers:
+const int pointsPin = 2;	//RPM/CDI Pulse pin
+const int MAPPin = A2;		//MAP sensor XXXXXXXXXX Tukar ni antara A1 @ A2 (A1=>TPS / A2=>MAP sensor)
+const int injectorPin = 3; 	//injector out
+const int LEDPin = 13;
+
+// Timing constants:
+const unsigned long injectorUpdateInterval = 50000;
+const unsigned long interruptDebounce = 3000;
+const unsigned long primeTime = 1500;
+const unsigned long pumpTime = 500;
+const int serialReportModulo = 10;
+const int RPMrunningAverageDepth = 5;
+const unsigned long blinkTime = 250;
+
+// Engine-related constants:
+const int pulsesPerRevolution = 2;
+const double displacement_Liters = 1.2;
+const double AFR = 10.0;    // ~14 for gasoline, ~10 for E85
+const double injector_MaxGramsPerMinute = 195.0;  // Will depend on your injector and fuel pressure
+const double stallRPM = 300.0;
+const double Pascals_Per_ADC_Unit = 122.1;
+const int vacuum_ADC_value = 102;
+
+// Physical parameters:
+const double airTempKelvin = 273;
+const double airMolarMass = 28.9;
+const double R_Liter_Pascal_Kelvin = 8314.0;
+
+// ----------------- Global Variables -----------------:
+unsigned long updateLastMicros = 0;
+unsigned long pointsLastMicros = 0;
+unsigned long pointsDiff = 100000000;
+bool stalled = 0;
+int serialReportCount = 0;
+double RPMrunningAverage[RPMrunningAverageDepth];
+int RPMrunningAverageIndex = 0;
+unsigned long blinkLastMillis = 0;
+bool blinkState = 0;
+
+// ----------------- Functions -----------------:
+
+// ISR triggered when the points open:
+void points()
+{
+	//Determine if interrupt is valid based on time since last interrupt:
+	if((micros() - pointsLastMicros) > interruptDebounce)
+	{
+		// Compute difference in time from last points opening:
+		pointsDiff = micros() - pointsLastMicros;
+
+		// Reset points timer:
+		pointsLastMicros = micros();
+	}
+
+}
+
+// Function to compute RPM based on time since last points opening:
+double RPM()
+{
+	// If pointsDiff is longer than the time since points() was last called,
+	// just use pointsDiff to compute the RPM:
+	if(pointsDiff > (micros() - pointsLastMicros))
+	{
+		// RPM = (Pulses/sec)/(Pulses/Revolution)*(60 sec/min)
+		RPMrunningAverage[RPMrunningAverageIndex] = (1000000.0/pointsDiff)/pulsesPerRevolution*60.0;
+	}
+	// If it has been longer than pointsDiff since points() was last called,
+	// use the elapsed time to compute the RPM:
+	else
+	{
+		// RPM = (Pulses/sec)/(Pulses/Revolution)*(60 sec/min)
+		RPMrunningAverage[RPMrunningAverageIndex] = (1000000.0/(micros() - pointsLastMicros))/pulsesPerRevolution*60.0;
+	}
+
+	//Increment running average index, reset if needed:
+	RPMrunningAverageIndex++;
+	if(RPMrunningAverageIndex >= RPMrunningAverageDepth)
+	{
+		RPMrunningAverageIndex = 0;
+	}
+
+	// Compute running average sum:
+	double sum = 0;
+	for(int i = 0; i < RPMrunningAverageDepth; i++)
+	{
+		sum = sum + RPMrunningAverage[i];
+	}
+
+	// Return running average of RPM:
+	return sum/RPMrunningAverageDepth;
+}
+
+// Function to measure the Manifold Absolute Pressure (MAP):
+double MAP()
+{
+	double estimatedMAP = (analogRead(MAPPin) - vacuum_ADC_value)*Pascals_Per_ADC_Unit;
+
+	// Ensure only positive MAP values are returned:
+	if(estimatedMAP < 0)
+	{
+		estimatedMAP = 0;
+	}
+
+	return estimatedMAP;
+}
+
+// Function to report human-readable stats to the serial port:
+void reportStats(double RPM_report, double MAP_report, double DC_report)
+{
+	// Report engine RPM:
+	Serial.print("Engine RPM: ");
+	Serial.println(RPM_report);
+	Serial.print("Manifold Absolute Pressure: ");
+	Serial.print("kPa: ");
+	Serial.print(MAP_report/1000.0);
+	Serial.print(" PSI: ");
+	Serial.println(MAP_report/6894.76);
+	Serial.print("Injector Duty Cycle: ");
+	Serial.print(DC_report*100.0);
+	Serial.println("%");
+	Serial.println(" ");
+}
+
+// Function to compute the required fuel injector duty cycle:
+double getInjectorDC()
+{
+	//Get measurements:
+	double RPM_value = RPM();
+	double MAP_value = MAP();
+
+	// Compute the volume flow rate of air (L/min) into the engine
+	// (Otto cycle with 2 revolutions per intake stroke assumed):
+	double volFlowRate = displacement_Liters*RPM_value/2.0;
+
+	// Compute the density of air (g/L) using the Ideal Gas Law (PV=nRT):
+	// Density = mass/volume = n(airMolarMass)/V = P(airMolarMass)/(RT)
+	double airDensity = MAP_value*airMolarMass/(R_Liter_Pascal_Kelvin*airTempKelvin);
+
+	// Compute the mass air flow rate into the engine:
+	double massAirFlow = volFlowRate*airDensity;
+
+	// Compute the required mass fuel flow rate into the engine:
+	double massFuelFlow = massAirFlow/AFR;
+
+	// Compute the duty cycle for the fuel injector 
+	// (based on the maximum fuel delivery rate):
+	double estimated_DC = massFuelFlow/injector_MaxGramsPerMinute;
+
+	// Ensure that the duty cycle does not exceed 1 or fall below 0:
+	if(estimated_DC > 1.0)
+	{
+		estimated_DC = 1.0;
+	}
+	if(estimated_DC < 0)
+	{
+		estimated_DC = 0;
+	}
+
+	// Report human-readable stats every serialReportModulo iterations:
+	if(serialReportCount < serialReportModulo)
+	{
+		serialReportCount++;
+	}
+	else
+	{
+		serialReportCount = 0;
+		reportStats(RPM_value, MAP_value, estimated_DC);
+	}
+
+	return estimated_DC;
+}
+
+// ----------------- Main Program -----------------:
+
+void setup() {
+	// Set pin modes:
+	pinMode(injectorPin, OUTPUT);
+	pinMode(pointsPin, INPUT);
+	pinMode(LEDPin, OUTPUT);
+	pinMode(8, OUTPUT);
+
+	// Attach interrupt for detecting points pulses:
+	attachInterrupt(digitalPinToInterrupt(pointsPin), points, FALLING);
+
+	//Start Serial port:
+	Serial.begin(115200);
+	Serial.println("EFI controller based on MAP and Points ONLY");
+	Serial.println(" ");
+
+	//Wait for fuel pump to build pressure:
+	Serial.println("Waiting for fuel pump...");
+	digitalWrite(8, HIGH);
+	delay(pumpTime);
+	Serial.println(" ");
+
+	// Prime engine with some fuel before starting:
+	Serial.println("Priming intake...");
+	digitalWrite(injectorPin, HIGH);
+	delay(primeTime);
+	digitalWrite(injectorPin, LOW);
+	Serial.println("Priming complete. Ready to crank!");
+	Serial.println(" ");
+}
+
+void loop() {
+	//Determine if the engine is currently stalled:
+	stalled = (RPM() < stallRPM);
+
+	// If engine is running, keep LED on and steady:
+	if(!stalled)
+	{
+		digitalWrite(LEDPin, HIGH);
+	}
+	// If engine is stalled, blink LED:
+	else if(millis() - blinkLastMillis > blinkTime)
+	{
+		blinkLastMillis = millis();
+		blinkState = !blinkState;
+		digitalWrite(LEDPin, blinkState);
+	}
+
+	// Pulse the injector if it is time to do so:
+	if((micros() - updateLastMicros) > injectorUpdateInterval)
+	{
+		// Reset injector update timer:
+		updateLastMicros = micros();
+
+		// Compute fuel injector duty cycle:
+		double computed_DC = getInjectorDC();
+
+		// Only dispense fuel if engine is running:
+		if(!stalled)
+		{
+			// Open injector for amount of time specified by duty cycle:
+			unsigned long injectorMicros = micros();
+			while((micros() - injectorMicros) < (unsigned long)(injectorUpdateInterval*computed_DC))
+			{
+				digitalWrite(injectorPin, HIGH);
+			}
+
+			//Close injector:
+			digitalWrite(injectorPin, LOW);
+		}
+	}
 
 }
